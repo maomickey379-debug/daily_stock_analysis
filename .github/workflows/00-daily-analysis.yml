@@ -1,9 +1,10 @@
 name: 每日股票分析
 
 on:
-  # 定时触发 - 每天北京时间 18:00 (UTC 10:00)
+  # 定时触发 - 每天北京时间 09:30（包括周末和节假日）
   schedule:
-    - cron: '0 10 * * 1-5'     # 周一到周五，UTC 10:00 = 北京时间 18:00
+    - cron: '30 9 * * *'
+      timezone: 'Asia/Shanghai'
   
   # 手动触发
   workflow_dispatch:
@@ -11,9 +12,10 @@ on:
       mode:
         description: '运行模式'
         required: true
-        default: 'full'
+        default: 'strategy-pdf'
         type: choice
         options:
+          - strategy-pdf  # A股广泛筛选 + PDF附件邮件
           - full          # 完整分析（股票+大盘）
           - market-only   # 仅大盘复盘
           - stocks-only   # 仅股票分析
@@ -35,12 +37,9 @@ jobs:
     # 推荐位置仍是 Settings -> Secrets and variables -> Actions -> Repository variables。
     environment: STOCK_LIST
     # 添加超时限制，防止任务卡死
-    timeout-minutes: ${{ fromJSON(vars.ANALYSIS_TIMEOUT_MINUTES || '30') }}
+    timeout-minutes: ${{ fromJSON(vars.ANALYSIS_TIMEOUT_MINUTES || '45') }}
     
     steps:
-      - name: 随机延迟（避免固定时间访问）
-        run: sleep $((RANDOM % 60))  # 随机延迟0-60秒启动
-      
       - name: 检出代码
         uses: actions/checkout@v5
       
@@ -55,10 +54,12 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
           python -c "import futu; print('✅ futu SDK import OK')"
+          sudo apt-get update
+          sudo apt-get install -y poppler-utils fonts-noto-cjk
       
       - name: 创建必要目录
         run: |
-          mkdir -p data logs reports
+          mkdir -p data logs reports output/pdf/rendered
       
       - name: 执行股票分析
         env:
@@ -449,7 +450,7 @@ jobs:
           fi
 
           # 判断运行模式
-          MODE="${{ github.event.inputs.mode || 'full' }}"
+          MODE="${{ github.event.inputs.mode || 'strategy-pdf' }}"
           
           echo "=========================================="
           echo "🚀 A股自选股智能分析系统"
@@ -527,13 +528,60 @@ jobs:
           fi
 
           # 执行分析
-          if [ "$MODE" = "market-only" ]; then
+          if [ "$MODE" = "strategy-pdf" ]; then
+            echo "📊 将生成A股策略PDF，不发送普通文本通知"
+            if [ -n "$GEMINI_API_KEY$DEEPSEEK_API_KEY$OPENAI_API_KEY$LITELLM_API_KEY$AIHUBMIX_KEY" ]; then
+              if ! python main.py --market-review --no-notify $FORCE_RUN_ARG; then
+                echo "⚠️ 市场复盘未生成，PDF将使用行情与行业筛选数据继续生成"
+              fi
+            else
+              echo "⚠️ 未配置模型API Key，跳过LLM市场复盘，继续生成技术策略PDF"
+            fi
+          elif [ "$MODE" = "market-only" ]; then
             python main.py --market-review $FORCE_RUN_ARG
           elif [ "$MODE" = "stocks-only" ]; then
             python main.py --no-market-review $FORCE_RUN_ARG
           else
             python main.py $FORCE_RUN_ARG
           fi
+
+      - name: 生成并验收A股策略PDF
+        id: strategy_pdf
+        if: ${{ github.event_name == 'schedule' || github.event.inputs.mode == 'strategy-pdf' }}
+        env:
+          A_SHARE_REPORT_UNIVERSE_LIMIT: ${{ vars.A_SHARE_REPORT_UNIVERSE_LIMIT || '120' }}
+          A_SHARE_REPORT_WORKERS: ${{ vars.A_SHARE_REPORT_WORKERS || '12' }}
+        run: |
+          REPORT_DATE="$(TZ='Asia/Shanghai' date '+%Y%m%d')"
+          PDF_PATH="output/pdf/a_share_daily_strategy_${REPORT_DATE}.pdf"
+          SUMMARY_PATH="output/pdf/a_share_daily_strategy_${REPORT_DATE}.md"
+          PAYLOAD_PATH="output/pdf/a_share_daily_strategy_${REPORT_DATE}.json"
+          RENDER_DIR="output/pdf/rendered/${REPORT_DATE}"
+
+          python scripts/generate_daily_strategy_report.py \
+            --output "$PDF_PATH" \
+            --summary "$SUMMARY_PATH" \
+            --payload-output "$PAYLOAD_PATH"
+          python scripts/verify_pdf_report.py \
+            --pdf "$PDF_PATH" \
+            --render-dir "$RENDER_DIR"
+
+          echo "pdf_path=$PDF_PATH" >> "$GITHUB_OUTPUT"
+          echo "summary_path=$SUMMARY_PATH" >> "$GITHUB_OUTPUT"
+          echo "report_date=$REPORT_DATE" >> "$GITHUB_OUTPUT"
+
+      - name: 发送A股策略PDF邮件
+        if: ${{ github.event_name == 'schedule' || github.event.inputs.mode == 'strategy-pdf' }}
+        env:
+          EMAIL_SENDER: ${{ vars.EMAIL_SENDER || secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECEIVERS: ${{ vars.EMAIL_RECEIVERS || secrets.EMAIL_RECEIVERS }}
+          EMAIL_SENDER_NAME: ${{ vars.EMAIL_SENDER_NAME || secrets.EMAIL_SENDER_NAME || 'A股每日策略报告' }}
+        run: |
+          python scripts/send_report_email.py \
+            --pdf "${{ steps.strategy_pdf.outputs.pdf_path }}" \
+            --message-file "${{ steps.strategy_pdf.outputs.summary_path }}" \
+            --subject "A股每日策略报告 - ${{ steps.strategy_pdf.outputs.report_date }}"
       
       - name: 上传分析报告
         uses: actions/upload-artifact@v6
@@ -543,6 +591,7 @@ jobs:
           path: |
             reports/
             logs/
+            output/pdf/
           retention-days: 30
       
       - name: 显示运行结果
@@ -557,6 +606,10 @@ jobs:
             ls -la reports/
           else
             echo "⚠️ 未生成报告文件"
+          fi
+          if [ -d "output/pdf" ] && [ "$(ls -A output/pdf 2>/dev/null)" ]; then
+            echo "PDF产物:"
+            find output/pdf -maxdepth 2 -type f -print
           fi
           echo ""
           if [ -f "logs/stock_analysis_$(date +%Y%m%d).log" ]; then

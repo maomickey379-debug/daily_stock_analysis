@@ -53,7 +53,7 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
   <img src="assets/secret_config.png" alt="GitHub Secrets Configuration" width="600">
 </div>
 
-#### AI Model Configuration (Configure at Least One)
+#### AI Model Configuration (Required for Regular Analysis)
 
 | Secret Name | Description | Required |
 |------------|------|:----:|
@@ -65,7 +65,7 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 | `OPENAI_BASE_URL` | OpenAI-compatible API endpoint (e.g., `https://api.deepseek.com`) | Optional |
 | `OPENAI_MODEL` | Model name (e.g., `deepseek-v4-flash`) | Optional |
 
-> *Note: Configure at least one model key or channel. Anspire or AIHubMix is the simplest starting point for one-key multi-model access. Startup validation reports a clear error when no usable AI model key or model channel is configured.
+> *Note: Regular stock analysis and the LLM market review require at least one model key or channel. `strategy-pdf` can still generate a market/technical report without one; when configured, the workflow also attempts to add market-review context.
 
 #### Notification Channels (Multiple can be configured, all will receive notifications)
 
@@ -117,6 +117,8 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 | `REPORT_TYPE` | Report type: `simple` (concise), `full` (complete), `brief` (3-5 sentences), Docker recommended: `full` | Optional |
 | `REPORT_LANGUAGE` | Default output language for reports and Agent Chat: `zh` (default Chinese) / `en` (English) / `ko` (Korean); also updates prompt instructions, templates, notification fallbacks, fixed copy in the Web report view, and Ask Stock replies that omit `context.report_language`. `ko` reuses the English structural scaffolding and constrains the model to Korean output via an output-language directive; notifications render localized labels by report language. The bundled `00-daily-analysis.yml` already maps this variable, so setting it in Actions Secrets/Variables works out of the box | Optional |
 | `REPORT_SHOW_LLM_MODEL` | Whether notification report footers show the LLM model used for analysis. Defaults to `true`; set to `false` to hide runtime model metadata. This switch only affects presentation and does not change provider/model/Base URL, LiteLLM routing, or runtime model save/migration/cleanup behavior. | Optional |
+| `A_SHARE_REPORT_UNIVERSE_LIMIT` | Maximum A-share strategy PDF universe size, default `120`; a live market snapshot extends the diversified liquid fallback universe when available. | Optional |
+| `A_SHARE_REPORT_WORKERS` | Concurrent daily-bar fetches for the A-share strategy PDF, default `12`. | Optional |
 | `REPORT_TEMPLATES_DIR` | Jinja2 template directory (relative to project root, default `templates`) | Optional |
 | `REPORT_RENDERER_ENABLED` | Enable Jinja2 template rendering (default `false`, zero regression) | Optional |
 | `REPORT_INTEGRITY_ENABLED` | Enable report integrity checks, retry or placeholder on missing fields (default `true`) | Optional |
@@ -194,7 +196,7 @@ To get started quickly, you need at minimum:
 
 ### 5. Done!
 
-Default schedule: Every weekday at **18:00 (Beijing Time)** automatic execution.
+Default schedule: `strategy-pdf` runs every day at **09:30 (Beijing Time)**, validates every rendered PDF page, emails the attachment, and uploads the PDF/summary/data as an Actions artifact. Weekends and holidays use the latest completed trading day.
 
 ---
 
@@ -765,19 +767,11 @@ Edit `.github/workflows/00-daily-analysis.yml`:
 
 ```yaml
 schedule:
-  # UTC time, Beijing time = UTC + 8
-  - cron: '0 10 * * 1-5'   # Monday to Friday 18:00 (Beijing Time)
+  - cron: '30 9 * * *'
+    timezone: 'Asia/Shanghai'
 ```
 
-Common time reference:
-
-| Beijing Time | UTC cron expression |
-|---------|----------------|
-| 09:30 | `'30 1 * * 1-5'` |
-| 12:00 | `'0 4 * * 1-5'` |
-| 15:00 | `'0 7 * * 1-5'` |
-| 18:00 | `'0 10 * * 1-5'` |
-| 21:00 | `'0 13 * * 1-5'` |
+GitHub Actions interprets the cron using the native `Asia/Shanghai` timezone. Scheduled workflows run from the default branch and may be queued during peak load, so 09:30 is the trigger time rather than a delivery-time guarantee.
 
 ### Local Scheduled Tasks
 
@@ -1043,6 +1037,17 @@ For a full illustrated troubleshooting guide, see [docs/bot/feishu-bot-config.md
 1. Enable SMTP service for your email
 2. Get authorization code (not login password)
 3. Set `EMAIL_SENDER`, `EMAIL_PASSWORD`, `EMAIL_RECEIVERS`
+
+To send an already generated PDF as a regular attachment:
+
+```bash
+python scripts/send_report_email.py \
+  --pdf output/pdf/report.pdf \
+  --message-file output/pdf/report.md \
+  --to receiver@example.com
+```
+
+Use the SMTP authorization code for `EMAIL_PASSWORD`; never place it in command lines, logs, reports, or committed files.
 
 Supported email providers:
 - QQ Mail: smtp.qq.com:465

@@ -6,16 +6,17 @@ Email 发送提醒服务
 1. 通过 SMTP 发送 Email 消息
 """
 import logging
+from pathlib import Path
 from typing import Optional, List
 from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.image import MIMEImage
+from email.mime.application import MIMEApplication
 from email.header import Header
 from email.utils import formataddr
 import smtplib
 
-from data_provider.base import normalize_stock_code
 from src.config import Config
 from src.formatters import markdown_to_html_document, strip_hidden_markdown_metadata
 
@@ -78,6 +79,8 @@ class EmailSender:
         """
         if not stock_codes or not self._stock_email_groups:
             return self._email_config['receivers']
+        from data_provider.base import normalize_stock_code
+
         normalized_codes = [normalize_stock_code(c) for c in stock_codes]
         seen: set = set()
         result: List[str] = []
@@ -277,6 +280,98 @@ class EmailSender:
             return True
         except Exception as e:
             logger.error("邮件（内联图片）发送失败: %s", e)
+            return False
+        finally:
+            self._close_server(server)
+
+    def send_email_with_pdf_attachment(
+        self,
+        content: str,
+        pdf_path: str,
+        subject: Optional[str] = None,
+        receivers: Optional[List[str]] = None,
+        *,
+        timeout_seconds: Optional[float] = None,
+    ) -> bool:
+        """Send a Markdown summary with a generated PDF report attached."""
+        if not self._is_email_configured():
+            logger.warning("邮件配置不完整，跳过 PDF 附件推送")
+            return False
+
+        attachment_path = Path(pdf_path).expanduser()
+        if not attachment_path.is_file() or attachment_path.suffix.lower() != ".pdf":
+            logger.error("PDF 附件不存在或格式无效: %s", attachment_path)
+            return False
+
+        sender = self._email_config['sender']
+        password = self._email_config['password']
+        receivers = receivers or self._email_config['receivers']
+        if not receivers:
+            logger.error("PDF 附件邮件缺少收件人")
+            return False
+
+        server: Optional[smtplib.SMTP] = None
+        try:
+            if subject is None:
+                date_str = datetime.now().strftime('%Y-%m-%d')
+                subject = f"📈 A股每日策略报告 - {date_str}"
+
+            msg = MIMEMultipart('mixed')
+            msg['Subject'] = Header(subject, 'utf-8')
+            msg['From'] = self._format_sender_address(sender)
+            msg['To'] = ', '.join(receivers)
+
+            body = MIMEMultipart('alternative')
+            body.attach(MIMEText(content, 'plain', 'utf-8'))
+            body.attach(MIMEText(markdown_to_html_document(content), 'html', 'utf-8'))
+            msg.attach(body)
+
+            with attachment_path.open('rb') as stream:
+                pdf_part = MIMEApplication(stream.read(), _subtype='pdf')
+            pdf_part.add_header(
+                'Content-Disposition',
+                'attachment',
+                filename=('utf-8', '', attachment_path.name),
+            )
+            msg.attach(pdf_part)
+
+            domain = sender.split('@')[-1].lower()
+            smtp_config = SMTP_CONFIGS.get(domain)
+            if smtp_config:
+                smtp_server = smtp_config['server']
+                smtp_port = smtp_config['port']
+                use_ssl = smtp_config['ssl']
+            else:
+                smtp_server = f"smtp.{domain}"
+                smtp_port = 465
+                use_ssl = True
+
+            if use_ssl:
+                server = smtplib.SMTP_SSL(
+                    smtp_server,
+                    smtp_port,
+                    timeout=timeout_seconds or 30,
+                )
+            else:
+                server = smtplib.SMTP(
+                    smtp_server,
+                    smtp_port,
+                    timeout=timeout_seconds or 30,
+                )
+                server.starttls()
+
+            server.login(sender, password)
+            server.send_message(msg)
+            logger.info("PDF 附件邮件发送成功，收件人: %s", receivers)
+            return True
+        except smtplib.SMTPAuthenticationError:
+            logger.error("PDF 附件邮件发送失败：认证错误，请检查邮箱和授权码")
+            return False
+        except smtplib.SMTPConnectError as exc:
+            logger.error("PDF 附件邮件发送失败：无法连接 SMTP 服务器 - %s", exc)
+            return False
+        except Exception as exc:
+            logger.error("PDF 附件邮件发送失败: %s", exc)
             return False
         finally:
             self._close_server(server)

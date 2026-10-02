@@ -53,7 +53,7 @@ daily_stock_analysis/
   <img src="assets/secret_config.png" alt="GitHub Secrets 配置示意图" width="600">
 </div>
 
-#### AI 模型配置（至少配置一个）
+#### AI 模型配置（普通分析至少配置一个）
 
 | Secret 名称 | 说明 | 必填 |
 |------------|------|:----:|
@@ -65,7 +65,7 @@ daily_stock_analysis/
 | `OPENAI_BASE_URL` | OpenAI 兼容 API 地址（如 `https://api.deepseek.com`） | 可选 |
 | `OPENAI_MODEL` | 模型名称（如 `gemini-3.1-pro-preview`、`deepseek-v4-flash`、`gpt-5.5`） | 可选 |
 
-> *注：以上模型 Key / 渠道至少配置一个；推荐优先从 Anspire 或 AIHubMix 这类一 Key 多模型服务开始。启动时配置校验会在缺少可用 AI 模型 Key 或模型渠道时给出明确错误提示。
+> *注：普通个股分析和 LLM 大盘复盘至少需要一个模型 Key / 渠道；`strategy-pdf` 模式没有模型 Key 也能按行情与技术指标生成报告，配置模型后会额外尝试生成市场复盘上下文。
 
 #### 通知渠道配置（可同时配置多个，全部推送）
 
@@ -119,6 +119,8 @@ daily_stock_analysis/
 | `REPORT_LANGUAGE` | 报告与 Agent Chat 的默认输出语言：`zh`(默认中文) / `en`(英文) / `ko`(韩文)；会同步影响 Prompt、模板、通知 fallback、Web 报告页固定文案，以及未显式传入 `context.report_language` 的问股回复。`ko` 复用英文结构骨架并通过输出语言指令约束模型用韩文输出，通知按报告语言渲染本地化标签。仓库自带 `00-daily-analysis.yml` 已显式映射该变量，直接在 Actions Secrets/Variables 中配置即可生效 | 可选 |
 | `REPORT_SUMMARY_ONLY` | 仅分析结果摘要：设为 `true` 时只推送汇总，不含个股详情；多股时适合快速浏览（默认 false，Issue #262） | 可选 |
 | `REPORT_SHOW_LLM_MODEL` | 通知报告底部是否显示本次分析使用的 LLM 模型名称，默认 `true`；设为 `false` 可隐藏运行时模型信息。该变量仅调整展示，不影响 provider/model/Base URL、LiteLLM 路由或运行时模型保存/迁移/清理语义。 | 可选 |
+| `A_SHARE_REPORT_UNIVERSE_LIMIT` | A股策略 PDF 最大候选池规模，默认 `120`；优先用全市场快照扩充，失败时回退到跨行业高流动性样本。 | 可选 |
+| `A_SHARE_REPORT_WORKERS` | A股策略 PDF 日线抓取并发数，默认 `12`。 | 可选 |
 | `REPORT_TEMPLATES_DIR` | Jinja2 模板目录（相对项目根，默认 `templates`） | 可选 |
 | `REPORT_RENDERER_ENABLED` | 启用 Jinja2 模板渲染（默认 `false`，保证零回归） | 可选 |
 | `REPORT_INTEGRITY_ENABLED` | 启用报告完整性校验，缺失必填字段时重试或占位补全（默认 `true`） | 可选 |
@@ -221,7 +223,7 @@ daily_stock_analysis/
 
 ### 5. 完成！
 
-默认每个工作日 **18:00（北京时间）** 自动执行。
+默认每天 **09:30（北京时间）** 自动执行 `strategy-pdf`：筛选 A 股、生成并逐页验收 PDF、发送邮件附件，并把 PDF/摘要/结构化数据保存为 Actions artifact。周末和节假日仍运行，但只使用最近一个已完成交易日的数据。
 
 ---
 
@@ -824,19 +826,11 @@ OpenD 默认地址为 `127.0.0.1:11111`，可用 `FUTU_OPEND_HOST` / `FUTU_OPEND
 
 ```yaml
 schedule:
-  # UTC 时间，北京时间 = UTC + 8
-  - cron: '0 10 * * 1-5'   # 周一到周五 18:00（北京时间）
+  - cron: '30 9 * * *'
+    timezone: 'Asia/Shanghai'
 ```
 
-常用时间对照：
-
-| 北京时间 | UTC cron 表达式 |
-|---------|----------------|
-| 09:30 | `'30 1 * * 1-5'` |
-| 12:00 | `'0 4 * * 1-5'` |
-| 15:00 | `'0 7 * * 1-5'` |
-| 18:00 | `'0 10 * * 1-5'` |
-| 21:00 | `'0 13 * * 1-5'` |
+GitHub Actions 原生时区字段会按 `Asia/Shanghai` 解释 cron，不需要手工换算 UTC。计划任务只会从默认分支运行；平台高峰期可能排队，因此 09:30 是触发时间而不是严格的送达时刻。
 
 #### GitHub Actions 非交易日手动运行（Issue #461 / #466）
 
@@ -857,7 +851,7 @@ schedule:
 手动触发步骤：
 
 1. 打开 `Actions → 每日股票分析 → Run workflow`
-2. 选择 `mode`（`full` / `market-only` / `stocks-only`）
+2. 选择 `mode`（`strategy-pdf` / `full` / `market-only` / `stocks-only`）
 3. 若当天是非交易日且希望仍执行，将 `force_run` 设为 `true`
 4. 点击 `Run workflow`
 
@@ -1180,6 +1174,17 @@ FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/your_hook_token
 1. 开启邮箱的 SMTP 服务
 2. 获取授权码（非登录密码）
 3. 设置 `EMAIL_SENDER`、`EMAIL_PASSWORD`、`EMAIL_RECEIVERS`
+
+生成 PDF 后，可将报告作为普通附件发送：
+
+```bash
+python scripts/send_report_email.py \
+  --pdf output/pdf/report.pdf \
+  --message-file output/pdf/report.md \
+  --to receiver@example.com
+```
+
+`EMAIL_PASSWORD` 必须使用邮箱服务商提供的 SMTP 授权码，不要填写账号登录密码，也不要将授权码写入命令行、日志或报告。
 
 支持的邮箱：
 - QQ 邮箱：smtp.qq.com:465

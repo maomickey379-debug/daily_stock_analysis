@@ -11,6 +11,7 @@ import hmac
 import json
 import os
 import sys
+import tempfile
 import unittest
 from email.header import decode_header, make_header
 from email.utils import parseaddr
@@ -1089,6 +1090,48 @@ class TestEmailSender(unittest.TestCase):
             "daily_stock_analysis股票分析助手",
         )
         server.quit.assert_called_once()
+
+    @mock.patch("smtplib.SMTP_SSL")
+    def test_send_pdf_attachment_uses_163_smtp_and_attaches_pdf(self, mock_smtp_ssl):
+        cfg = _config(
+            email_sender="sender@163.com",
+            email_password="authorization-code",
+            email_receivers=["recipient@163.com"],
+        )
+        sender = EmailSender(cfg)
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as report:
+            report.write(b"%PDF-1.4 test")
+            report.flush()
+            result = sender.send_email_with_pdf_attachment(
+                "报告摘要",
+                report.name,
+                subject="A股日报",
+            )
+
+        self.assertTrue(result)
+        mock_smtp_ssl.assert_called_once_with("smtp.163.com", 465, timeout=30)
+        server = mock_smtp_ssl.return_value
+        server.login.assert_called_once_with("sender@163.com", "authorization-code")
+        msg = server.send_message.call_args[0][0]
+        self.assertEqual(msg["To"], "recipient@163.com")
+        attachments = [part for part in msg.walk() if part.get_content_disposition() == "attachment"]
+        self.assertEqual(len(attachments), 1)
+        self.assertEqual(attachments[0].get_content_type(), "application/pdf")
+        self.assertTrue(attachments[0].get_filename().endswith(".pdf"))
+        server.quit.assert_called_once()
+
+    def test_send_pdf_attachment_rejects_missing_file(self):
+        cfg = _config(
+            email_sender="sender@163.com",
+            email_password="authorization-code",
+            email_receivers=["recipient@163.com"],
+        )
+        sender = EmailSender(cfg)
+
+        self.assertFalse(
+            sender.send_email_with_pdf_attachment("报告摘要", "/missing/report.pdf")
+        )
 
 
 class TestNtfySender(unittest.TestCase):
