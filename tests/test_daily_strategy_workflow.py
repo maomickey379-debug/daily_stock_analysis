@@ -6,8 +6,8 @@ WORKFLOW = Path(".github/workflows/00-daily-analysis.yml")
 
 def test_daily_strategy_workflow_contract():
     text = WORKFLOW.read_text(encoding="utf-8")
-    assert "cron: '30 9 * * *'" in text
-    assert "timezone: 'Asia/Shanghai'" in text
+    assert "cron: '30 1 * * *'" in text
+    assert "timezone:" not in text.split("workflow_dispatch:", 1)[0]
     assert "default: 'strategy-pdf'" in text
     assert "python scripts/generate_daily_strategy_report.py" in text
     assert "python scripts/verify_pdf_report.py" in text

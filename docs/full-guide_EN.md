@@ -767,11 +767,10 @@ Edit `.github/workflows/00-daily-analysis.yml`:
 
 ```yaml
 schedule:
-  - cron: '30 9 * * *'
-    timezone: 'Asia/Shanghai'
+  - cron: '30 1 * * *'  # 01:30 UTC = 09:30 Beijing Time
 ```
 
-GitHub Actions interprets the cron using the native `Asia/Shanghai` timezone. Scheduled workflows run from the default branch and may be queued during peak load, so 09:30 is the trigger time rather than a delivery-time guarantee.
+The workflow uses an explicit UTC cron: `01:30 UTC` is `09:30` in Beijing. This representation also helps forks re-register the scheduled trigger. Scheduled workflows run from the default branch and may be queued during peak load, so 09:30 is the trigger time rather than a delivery-time guarantee.
 
 ### Local Scheduled Tasks
 

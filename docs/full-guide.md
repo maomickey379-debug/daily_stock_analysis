@@ -826,11 +826,10 @@ OpenD 默认地址为 `127.0.0.1:11111`，可用 `FUTU_OPEND_HOST` / `FUTU_OPEND
 
 ```yaml
 schedule:
-  - cron: '30 9 * * *'
-    timezone: 'Asia/Shanghai'
+  - cron: '30 1 * * *'  # UTC 01:30 = 北京时间 09:30
 ```
 
-GitHub Actions 原生时区字段会按 `Asia/Shanghai` 解释 cron，不需要手工换算 UTC。计划任务只会从默认分支运行；平台高峰期可能排队，因此 09:30 是触发时间而不是严格的送达时刻。
+工作流使用 UTC cron：`01:30 UTC` 对应北京时间 `09:30`。这种写法也便于 Fork 重新注册计划任务。计划任务只会从默认分支运行；平台高峰期可能排队，因此 09:30 是触发时间而不是严格的送达时刻。
 
 #### GitHub Actions 非交易日手动运行（Issue #461 / #466）
 

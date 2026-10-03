@@ -1,10 +1,10 @@
 name: 每日股票分析
 
 on:
-  # 定时触发 - 每天北京时间 09:30（包括周末和节假日）
+  # 定时触发 - 每天北京时间 09:30（UTC 01:30，包括周末和节假日）
+  # 使用 UTC cron，兼容 Fork 的计划任务注册与执行。
   schedule:
-    - cron: '30 9 * * *'
-      timezone: 'Asia/Shanghai'
+    - cron: '30 1 * * *'
   
   # 手动触发
   workflow_dispatch:
